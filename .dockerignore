@@ -1,0 +1,11 @@
+.git
+.github
+.gitignore
+.dockerignore
+Dockerfile
+service.yaml
+/*.md
+testdata
+*_test.go
+# google-github-actions/auth が書き出す認証情報
+gha-creds-*.json

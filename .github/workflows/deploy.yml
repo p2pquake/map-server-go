@@ -1,0 +1,69 @@
+# テストを実行し、main への push で Cloud Run にデプロイします。
+# Google Cloud への認証は Workload Identity 連携を使います (鍵ファイルは不要)。
+# Action はタグではなくコミット SHA で固定しています (更新は Dependabot が行います)。
+name: Test and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 既定では権限を与えず、ジョブごとに必要なものだけ与える
+permissions: {}
+
+env:
+  PROJECT_ID: p2pquake
+  REGION: asia-northeast1
+  IMAGE: asia-northeast1-docker.pkg.dev/p2pquake/map-server-go/map-server-go
+  WORKLOAD_IDENTITY_PROVIDER: projects/667662372160/locations/global/workloadIdentityPools/github-actions/providers/map-server-go
+  DEPLOYER_SERVICE_ACCOUNT: map-server-go-deployer@p2pquake.iam.gserviceaccount.com
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    # 同時に複数のデプロイが走らないようにする (後から来たものは前のものの完了を待つ)
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write # Workload Identity 連携で必要
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Build and push image
+        run: |
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          docker build --platform linux/amd64 -t "${IMAGE}:${GITHUB_SHA}" .
+          docker push "${IMAGE}:${GITHUB_SHA}"
+
+      - name: Deploy to Cloud Run
+        run: |
+          sed "s#image: IMAGE#image: ${IMAGE}:${GITHUB_SHA}#" service.yaml > "${RUNNER_TEMP}/service.yaml"
+          gcloud run services replace "${RUNNER_TEMP}/service.yaml" --region="${REGION}" --project="${PROJECT_ID}"
