@@ -16,8 +16,9 @@ spec:
     spec:
       # Google Cloud の API は使わないため、ロールを付与していない専用のサービスアカウントで動かす
       serviceAccountName: map-server-go@p2pquake.iam.gserviceaccount.com
-      # 描画は CPU を使い切るため、1 インスタンスで 1 リクエストずつ処理する
-      containerConcurrency: 1
+      # 同時に届いたリクエストごとに新しいインスタンスを起動するとコールドスタートが増えるため、
+      # 1 インスタンスで 4 リクエストまで同時に処理する (描画は 1 リクエストで 1 コアを使い切る)
+      containerConcurrency: 4
       timeoutSeconds: 60
       containers:
         - image: IMAGE
@@ -25,17 +26,12 @@ spec:
             - name: http1
               containerPort: 8080
           env:
-            # 512MiB を超える前に GC を強める (JAPAN_4096 の全域描画で約 170MB)
+            # 1GiB を超える前に GC を強める (JAPAN_4096 の全域描画で 1 リクエスト約 170MB)
             - name: GOMEMLIMIT
-              value: 450MiB
+              value: 900MiB
           resources:
             limits:
-              cpu: "1"
-              memory: 512Mi
-          startupProbe:
-            httpGet:
-              path: /test
-              port: 8080
-            periodSeconds: 1
-            failureThreshold: 10
-            timeoutSeconds: 1
+              cpu: "2"
+              memory: 1Gi
+          # 起動プローブは指定しない (既定の TCP プローブになり、ポートが開いた時点でリクエストを受ける)。
+          # HTTP プローブは 1 回目が listen 前に失敗し、次の試行まで 1 秒待つためコールドスタートが遅くなる
